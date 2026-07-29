@@ -32,7 +32,10 @@
         "prepare": "",
         "preinstall": "node ./engine-requirements.js",
         "release": "release-it",
-        "test": "jest"
+        "test": "jest",
+        "format": "prettier --write \"**/*.js\" --ignore-path .prettierignore",
+        "lint": "eslint **/*.js --ignore-path .prettierignore",
+        "format:check": "prettier --check \"**/*.js\" --ignore-path .prettierignore"
     },
     "dependencies": {
         "@adiwajshing/keyed-db": "^0.2.4",
