@@ -4,12 +4,30 @@ const walk = require('acorn-walk');
 const fs = require('fs/promises');
 const { existsSync } = require('fs');
 const path = require('path');
+const { execFile } = require('child_process');
+const { promisify } = require('util');
 
 // Output to WAProto at the repo root
 const OUTPUT_DIR = path.resolve(__dirname, '..', 'WAProto');
 
 const MAX_RETRIES = 5;
 const INITIAL_DELAY_MS = 5000;
+const execFileAsync = promisify(execFile);
+
+/**
+ * Statuses where the request was refused, not genuinely unavailable — same
+ * codes behind the 405 pairing failures. undici gets blocked on some
+ * networks where curl still gets through, so these are worth a second
+ * attempt via curl before burning a retry on the normal backoff loop.
+ */
+const FALLBACK_STATUS = new Set([401, 403, 405, 407, 429, 503]);
+
+async function curlText(url, headers = {}) {
+   const args = ['-sS', '--http2', '--compressed', '--fail', '--max-time', '90', url];
+   for (const [key, value] of Object.entries(headers)) args.push('-H', `${key}: ${value}`);
+   const { stdout } = await execFileAsync('curl', args, { maxBuffer: 1024 * 1024 * 1024 });
+   return stdout;
+}
 
 async function fetchWithRetry(url, options = {}, retries = MAX_RETRIES) {
    for (let attempt = 1; attempt <= retries; attempt++) {
@@ -17,6 +35,14 @@ async function fetchWithRetry(url, options = {}, retries = MAX_RETRIES) {
          const response = await fetch(url, options);
          if (response.ok) {
             return await response.text();
+         }
+         if (FALLBACK_STATUS.has(response.status)) {
+            console.warn(`Got ${response.status} for ${url} via fetch, trying curl fallback...`);
+            try {
+               return await curlText(url, options.headers);
+            } catch (curlErr) {
+               console.warn(`curl fallback failed: ${curlErr.message}`);
+            }
          }
          // On 503 or other server errors, retry
          if (response.status >= 500 && attempt < retries) {

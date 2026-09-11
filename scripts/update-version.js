@@ -20,7 +20,26 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
 Object.defineProperty(exports, "__esModule", { value: true });
 const fs_1 = require("fs");
 const path_1 = require("path");
+const child_process_1 = require("child_process");
+const util_1 = require("util");
 const ROOT_DIR = (0, path_1.join)(__dirname, '..');
+const execFileAsync = (0, util_1.promisify)(child_process_1.execFile);
+/**
+ * Statuses where the request was refused, not genuinely unavailable — same
+ * codes we chased down debugging the 405 pairing failures. undici gets
+ * blocked on some networks where curl still gets through, so these are worth
+ * a second attempt via curl before we give up and retry the whole loop.
+ */
+const FALLBACK_STATUS = new Set([401, 403, 405, 407, 429, 503]);
+function curlText(url, headers) {
+    return __awaiter(this, void 0, void 0, function* () {
+        const args = ['-sS', '--http2', '--compressed', '--fail', '--max-time', '90', url];
+        for (const [key, value] of Object.entries(headers))
+            args.push('-H', `${key}: ${value}`);
+        const { stdout } = yield execFileAsync('curl', args, { maxBuffer: 1024 * 1024 * 1024 });
+        return stdout;
+    });
+}
 /**
  * Fetch latest WhatsApp Web version
  */
@@ -53,6 +72,16 @@ function fetchLatestWaWebVersion() {
                     if (response.ok) {
                         data = yield response.text();
                         break;
+                    }
+                    if (FALLBACK_STATUS.has(response.status)) {
+                        console.warn(`Got ${response.status} for sw.js via fetch, trying curl fallback...`);
+                        try {
+                            data = yield curlText(`${baseURL}/sw.js`, headers);
+                            break;
+                        }
+                        catch (curlErr) {
+                            console.warn(`curl fallback failed: ${curlErr.message}`);
+                        }
                     }
                     if (response.status >= 500 && attempt < MAX_RETRIES) {
                         const delay = INITIAL_DELAY_MS * Math.pow(2, attempt - 1) + Math.random() * 2000;
